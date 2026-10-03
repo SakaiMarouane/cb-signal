@@ -68,7 +68,7 @@ End-to-end runnable on **real data**: ECB, Fed and BoE communications are scrape
 
 ### Real corpus
 
-1,997–2026, 3,968 documents scraped from the official sites: 1,871 ECB speeches, 1,649 Fed statements/minutes/speeches, 448 BoE speeches and MPC minutes. Rates panel is 2Y/10Y US Treasury, DE/UK long-term yields and VIX from FRED, 1956–2026.
+1997–2026, 3,968 documents scraped from the official sites: 1,871 ECB speeches, 1,649 Fed statements/minutes/speeches, 448 BoE speeches and MPC minutes. Rates panel is 2Y/10Y US Treasury, DE/UK long-term yields and VIX from FRED, 1956–2026.
 
 ### Results on real data
 
