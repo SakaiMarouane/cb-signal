@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Raw HTML scrape cache (hundreds of MB, regenerable via `python -m cb_signal.ingest`)
+data/raw/.cache/
+
+# OS
+.DS_Store
+Thumbs.db
