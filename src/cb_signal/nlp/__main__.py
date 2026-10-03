@@ -6,9 +6,15 @@ Methods
 -------
 --method dict      Dictionary hawkish/dovish scorer. Fast, no model download.
                    Output: data/processed/sentiment_dict.parquet
---method finbert   Transformer classifier (default: gtfintechlab/FOMC-RoBERTa,
-                   fallback: ProsusAI/finbert). CPU-friendly but slow.
+--method finbert   Transformer classifier (default: ProsusAI/finbert, a
+                   public model; see cb_signal.nlp.finbert for the gated
+                   FOMC-specific alternative). CPU-friendly but slow.
                    Output: data/processed/sentiment_finbert.parquet
+--method transformer  Fine-tuned tier: MiniLM sentence embeddings + a
+                   logistic-regression head trained on a small templated
+                   example set (see cb_signal.nlp.finetuned for data
+                   provenance). Trains itself on first use.
+                   Output: data/processed/sentiment_transformer.parquet
 
 Flags
 -----
@@ -35,7 +41,7 @@ from cb_signal.nlp.lexicons import build_lexicon
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Score the consolidated corpus with a sentiment model.")
-    parser.add_argument("--method", choices=["dict", "finbert"], default="dict",
+    parser.add_argument("--method", choices=["dict", "finbert", "transformer"], default="dict",
                         help="Which sentiment method to run (default: dict).")
     parser.add_argument("--input", type=Path, default=None, help="Path to interim corpus parquet.")
     parser.add_argument("--output", type=Path, default=None, help="Path to write scored parquet.")
@@ -48,11 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parents[3]
     input_path = args.input or (root / "data" / "interim" / "corpus.parquet")
 
-    if args.method == "dict":
-        default_out = root / "data" / "processed" / "sentiment_dict.parquet"
-    else:
-        default_out = root / "data" / "processed" / "sentiment_finbert.parquet"
-    output_path = args.output or default_out
+    default_out_names = {
+        "dict": "sentiment_dict.parquet",
+        "finbert": "sentiment_finbert.parquet",
+        "transformer": "sentiment_transformer.parquet",
+    }
+    output_path = args.output or (root / "data" / "processed" / default_out_names[args.method])
 
     if not input_path.exists():
         logger.error(f"input corpus not found: {input_path}. Run `python -m cb_signal.ingest` first.")
@@ -71,8 +78,12 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(lex.uncertainty)} uncertainty, max_ngram={lex.max_ngram}"
         )
         scored = score_corpus_dict(corpus, lex)
-    else:
+    elif args.method == "finbert":
         scored = score_corpus_finbert(corpus, model_name=args.model)
+    else:
+        from cb_signal.nlp.finetuned import score_corpus as score_corpus_finetuned
+
+        scored = score_corpus_finetuned(root, corpus)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     scored.to_parquet(output_path, index=False)

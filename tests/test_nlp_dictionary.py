@@ -19,7 +19,6 @@ from cb_signal.nlp.preprocessing import (
     word_tokens,
 )
 
-
 # ---------------------------------------------------------------------------
 # preprocessing
 # ---------------------------------------------------------------------------
@@ -81,7 +80,7 @@ def test_default_lexicon_has_no_polarity_conflicts():
 
 def test_phrase_hits_longest_match_wins():
     lex = build_default_lexicon()
-    tokens = "we see upside risks to inflation".split()
+    tokens = ["we", "see", "upside", "risks", "to", "inflation"]
     hits = _phrase_hits(tokens, lex.hawkish, lex.max_ngram)
     matched = [phrase for _, phrase in hits]
     # Should match the trigram phrase, not "upside risks" alone twice.

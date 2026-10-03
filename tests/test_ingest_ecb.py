@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from cb_signal.ingest.ecb import CANONICAL_COLUMNS, _extract_speaker, _parse_speech_page, _stable_doc_id
+from cb_signal.ingest.ecb import (
+    CANONICAL_COLUMNS,
+    _extract_speaker,
+    _parse_speech_page,
+    _stable_doc_id,
+)
 
 
 def test_stable_doc_id_is_deterministic():

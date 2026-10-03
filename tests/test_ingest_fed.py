@@ -3,9 +3,9 @@ from __future__ import annotations
 import datetime as dt
 
 from cb_signal.ingest.fed import (
+    _extract_press_release_body,
     _parse_meeting_dates_from_page,
     _parse_speech_page,
-    _extract_press_release_body,
 )
 
 

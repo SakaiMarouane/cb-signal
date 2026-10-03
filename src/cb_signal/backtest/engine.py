@@ -13,7 +13,6 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-
 DURATIONS = {"DGS2": 1.9, "DGS10": 8.5}
 TC_BPS = 20.0
 
@@ -30,18 +29,20 @@ class TearsheetRow:
     n_periods: int
 
 
-def to_bond_returns(rate_wide: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+def to_bond_returns(rate_wide: pd.DataFrame, cols: list[str], durations: dict[str, float] | None = None) -> pd.DataFrame:
     """Convert yield levels (%) to weekly bond returns via -D * dY / 100."""
+    durations = durations or DURATIONS
     r = pd.DataFrame(index=rate_wide.index)
     for c in cols:
         d_yield = rate_wide[c].diff() / 100.0  # yield change in decimals
-        r[c] = -DURATIONS[c] * d_yield
+        r[c] = -durations[c] * d_yield
     return r
 
 
 def run_strategy(signals: pd.DataFrame,
                  leg: str = "DGS2",
-                 tc_bps: float = TC_BPS) -> pd.DataFrame:
+                 tc_bps: float = TC_BPS,
+                 durations: dict[str, float] | None = None) -> pd.DataFrame:
     """Weekly long/short strategy on one bond leg using `signal_<leg>`.
 
     Convention: positive signal_<leg> = expect yield UP = SHORT the bond.
@@ -57,7 +58,7 @@ def run_strategy(signals: pd.DataFrame,
     else:
         raise ValueError(leg)
 
-    bond_r = to_bond_returns(df[[leg]], [leg])
+    bond_r = to_bond_returns(df[[leg]], [leg], durations=durations)
     raw_signal = df[sig_col].clip(-3, 3) / 3.0  # scale to ~[-1, 1]
     position = (-raw_signal).shift(1).clip(-1, 1).fillna(0.0)  # T+1 execution
 
@@ -95,13 +96,15 @@ def compute_metrics(bt: pd.DataFrame, strategy: str, periods_per_year: int = 52)
                         float(max_dd), float(hit), float(turnover_ann), len(r))
 
 
-def full_backtest(signals: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def full_backtest(
+    signals: pd.DataFrame, tc_bps: float = TC_BPS, durations: dict[str, float] | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run both legs; return (per-leg equity frames, tearsheet)."""
     legs = ["DGS2", "DGS10"]
     equity_curves = {}
     rows = []
     for leg in legs:
-        bt = run_strategy(signals, leg=leg)
+        bt = run_strategy(signals, leg=leg, tc_bps=tc_bps, durations=durations)
         equity_curves[leg] = bt
         rows.append(compute_metrics(bt, strategy=f"CB-Signal short-{leg[3:]}"))
     tearsheet = pd.DataFrame([r.__dict__ for r in rows])
@@ -120,3 +123,41 @@ def full_backtest(signals: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         pd.DataFrame([compute_metrics(combined, "CB-Signal 50/50").__dict__]),
     ], ignore_index=True)
     return equity_curves, tearsheet
+
+
+# Named macro regimes for sub-period stability reporting. Boundaries are
+# approximate and meant to isolate qualitatively distinct monetary-policy
+# environments, not to be read as official NBER/CEPR dating.
+SUBPERIODS: dict[str, tuple[str, str]] = {
+    "GFC (2007-2009)": ("2007-01-01", "2009-12-31"),
+    "ZIRP (2009-2015)": ("2009-01-01", "2015-12-31"),
+    "COVID (2020-2021)": ("2020-01-01", "2021-12-31"),
+    "Hiking cycle (2022-2023)": ("2022-01-01", "2023-12-31"),
+    "Plateau (2024+)": ("2024-01-01", "2030-12-31"),
+}
+
+
+def subperiod_stability(
+    signals: pd.DataFrame,
+    periods: dict[str, tuple[str, str]] | None = None,
+    tc_bps: float = TC_BPS,
+    durations: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Re-run `full_backtest` on each named sub-period; one tearsheet per period.
+
+    A period with too little data for a given leg (e.g. a signal history
+    that starts after a period's end) is silently skipped for that leg.
+    """
+    periods = periods or SUBPERIODS
+    df = signals.copy()
+    df["date"] = pd.to_datetime(df["date"])
+
+    rows = []
+    for name, (start, end) in periods.items():
+        sliced = df[(df["date"] >= start) & (df["date"] <= end)]
+        if len(sliced) < 10:
+            continue
+        _, tearsheet = full_backtest(sliced.reset_index(drop=True), tc_bps=tc_bps, durations=durations)
+        tearsheet.insert(0, "period", name)
+        rows.append(tearsheet)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()

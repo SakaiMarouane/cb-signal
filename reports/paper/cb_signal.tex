@@ -1,0 +1,336 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{float}
+
+\title{CB-Signal: Extracting a Monetary-Policy Tone Signal from\\
+Central Bank Communications}
+\author{Marouane Sakai}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We build an end-to-end pipeline that scrapes European Central Bank (ECB),
+Federal Reserve (Fed) and Bank of England (BoE) communications, scores
+their hawkish/dovish tone with three independent methods (a curated
+phrase dictionary, a pretrained financial-sentiment transformer, and a
+lightweight fine-tuned sentence-embedding classifier), aggregates tone
+into a weekly index, and backtests a resulting trading signal against
+2Y/10Y government bond yields. On 3,968 real documents spanning
+1997--2026, the baseline dictionary signal shows no robust full-sample
+edge (Sharpe ratios from $-1.6$ to $+0.07$ across legs), but sub-period
+analysis reveals the signal performs materially better during the
+2022--2023 hiking cycle (Sharpe up to $1.8$) than in other regimes. On a
+common window comparing all three sentiment tiers, the simple dictionary
+outperforms both the pretrained and fine-tuned transformer tiers --- a
+caution against assuming more sophisticated models automatically win on a
+narrow, low-data task. We also document and fix a look-ahead issue in the
+original regime-labelling procedure, and report where a walk-forward
+refit changes the resulting labels. We report all of this plainly,
+including the negative full-sample result, rather than presenting only
+the sub-period in which the signal happens to work.
+\end{abstract}
+
+\section{Motivation}
+
+Central bank communications are a primary channel through which monetary
+policy expectations are formed. A large academic literature
+\citep{apel2012information,hansen2016shocking,bennani2017home} argues that
+the \emph{tone} of this language --- hawkish (tightening-oriented) versus
+dovish (easing-oriented) --- carries information beyond the policy rate
+decision itself. This project asks a narrower, falsifiable question: does a
+systematic, text-derived tone signal, built with openly documented methods
+and tested on real market data, produce a backtestable edge on government
+bond yields once realistic transaction costs are applied?
+
+\section{Data}
+
+\subsection{Communications corpus}
+
+We scrape three sources directly from the issuing institutions' own
+websites (no third-party aggregator):
+
+\begin{itemize}
+  \item \textbf{ECB}: 1,871 speeches (1997--2026), discovered via the
+    ECB's AddSearch-powered site search (the previously published bulk CSV
+    feed was discontinued following a site redesign) and parsed from each
+    speech's canonical HTML page.
+  \item \textbf{Fed}: 1,649 documents --- 167 FOMC statements, 150 FOMC
+    minutes, and 1,332 speeches (2006--2026) --- discovered via the Fed's
+    historical and current meeting calendars and speech archives.
+  \item \textbf{BoE}: 448 documents --- 371 speeches and 77 Monetary
+    Policy Summary/minutes releases (2015--2026) --- discovered via BoE's
+    sitemap feed, after the browsable listing pages moved to a
+    JavaScript-rendered search widget.
+\end{itemize}
+
+\noindent Table~\ref{tab:corpus} summarises coverage. All ingestion code
+retries transiently-failing requests, caches raw HTML on disk, and is
+designed to degrade gracefully (skip, don't crash) when an individual page
+is unreachable.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Source & Documents & Event types & Date range \\
+\midrule
+ECB & 1,871 & speech & 1997--2026 \\
+Fed & 1,649 & statement, minutes, speech & 2006--2026 \\
+BoE & 448 & speech, minutes & 2015--2026 \\
+\midrule
+Total & 3,968 & & 1997--2026 \\
+\bottomrule
+\end{tabular}
+\caption{Real communications corpus used in this study.}
+\label{tab:corpus}
+\end{table}
+
+\subsection{Market data}
+
+Weekly 2-year and 10-year US Treasury yields (FRED series \texttt{DGS2},
+\texttt{DGS10}), German and UK long-term government yields, and the VIX
+are pulled directly from the FRED API (39,665 observations, 1956--2026).
+
+\section{Methodology}
+
+\subsection{Sentiment scoring tiers}
+
+We score every document with three independent methods so that the
+dictionary baseline's results can be cross-checked rather than taken on
+faith:
+
+\begin{enumerate}
+  \item \textbf{Dictionary} (baseline): a curated hawkish/dovish phrase
+    lexicon drawn from \citet{apel2012information},
+    \citet{hansen2016shocking} and \citet{bennani2017home}, plus a
+    Loughran--McDonald \citep{loughran2011liability} uncertainty subset,
+    matched with negation handling over a 3-token window. Net tone is
+    $(\text{hawkish hits} - \text{dovish hits}) / \text{total hits}$.
+  \item \textbf{Pretrained transformer}: ProsusAI/FinBERT
+    \citep{araci2019finbert}, a BERT model fine-tuned on financial news
+    sentiment (positive/negative/neutral), with positive/negative remapped
+    to dovish/hawkish. Long documents are chunked into overlapping
+    512-token windows and the resulting per-chunk probabilities averaged.
+    (The FOMC-specific \citet{shah2023trillion} RoBERTa model would be a
+    closer match to this task, but its HuggingFace repository is
+    access-gated; FinBERT is used as the publicly reproducible
+    alternative.)
+  \item \textbf{Fine-tuned tier}: sentence embeddings from
+    \texttt{all-MiniLM-L6-v2} \citep{reimers2019sentencebert} with a
+    multinomial logistic-regression head, trained on a small
+    (482-example) hawkish/dovish/neutral set. \emph{This set is not an
+    independently human-annotated research dataset} --- it is built by
+    dropping each phrase from the dictionary lexicon into several carrier
+    sentences, plus a hand-written list of genuinely neutral central-bank
+    boilerplate sentences for the neutral class. We report it as a
+    lightweight, transparently-constructed classifier, not as a validated
+    gold-standard benchmark.
+\end{enumerate}
+
+\subsection{Signal construction}
+
+Document-level tone is averaged per source per week, then averaged across
+sources into a single weekly hawkish index. An exponential moving average
+(12-week half-life) serves as the baseline; the surprise (index $-$ EMA) is
+expanding-window z-scored (so, by construction, only information available
+up to that week is used --- no look-ahead) and clipped to $[-3, 3]$. The
+tradable signal is a 4-week rolling average of a 50/50 blend of the
+z-scored level and the z-scored surprise, applied with full weight to the
+2-year leg and 60\% weight to the 10-year leg.
+
+\subsection{Regime labelling: a look-ahead issue, found and fixed}
+
+A 3-state Gaussian HMM on the level and week-over-week change of the
+hawkish index labels each week dovish/neutral/hawkish for descriptive and
+diagnostic purposes. \emph{This regime label does not feed the tradable
+signal above} --- the signal is built only from the already point-in-time
+EMA/surprise construction. The original implementation fit the HMM once on
+the entire sample, meaning early-sample regime labels were informed by
+the model's fit to \emph{later} data: a look-ahead issue for a
+descriptive label, even though it has no effect on realised backtest P\&L.
+We implemented a walk-forward version that refits the HMM yearly on an
+expanding window and labels only the following year out-of-sample. The
+walk-forward and in-sample labels disagree on 45\% of weeks, showing the
+original full-sample fit was not a robust description of the regime
+structure, and this out-of-sample version should be preferred whenever the
+regime label itself is used for anything beyond the illustrative plot
+included here.
+
+\subsection{BERTopic thematic decomposition}
+
+As a complementary descriptive layer, we fit BERTopic
+\citep{grootendorst2022bertopic} on sentence embeddings of the full corpus
+to recover the dominant themes discussed across communications (inflation,
+labour markets, financial stability, etc.) and their prevalence over time.
+This is reported alongside the tone signal as context, not as an input to
+it.
+
+\subsection{Backtest}
+
+Weekly yield changes are converted to approximate bond returns via a
+constant modified-duration approximation ($D_{2Y}=1.9$, $D_{10Y}=8.5$).
+Positions are $-\mathrm{sign/magnitude}$ of the (lagged, $T+1$) signal,
+clipped to $[-1,+1]$, with 20bps round-trip transaction costs charged on
+turnover.
+
+\section{Results}
+
+\subsection{Full-sample tearsheet}
+
+Table~\ref{tab:main} reports full-sample results for the dictionary tier
+(weekly, 1997--2026, 20bps round-trip TC, $T{+}1$ execution). FinBERT and
+fine-tuned-tier results on the full corpus are not reported here --- at
+this project's measured throughput on CPU (about 8 seconds per document
+for FinBERT), scoring the full 3,968-document corpus would take roughly
+9 hours; Section~\ref{sec:tiers} instead compares all three tiers on a
+smaller, tractable window.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+Strategy & Ann.\ return & Ann.\ vol & Sharpe & Max DD & Turnover/yr \\
+\midrule
+Short 10Y   & $+0.07\%$ & $0.92\%$ & $0.07$  & $-6.1\%$  & 2.2 \\
+50/50       & $-0.24\%$ & $0.60\%$ & $-0.40$ & $-10.0\%$ & 2.9 \\
+Short 2Y    & $-0.55\%$ & $0.34\%$ & $-1.61$ & $-15.2\%$ & 3.6 \\
+\bottomrule
+\end{tabular}
+\caption{Dictionary-tier full-sample results on real data.}
+\label{tab:main}
+\end{table}
+
+None of the three legs clears a Sharpe ratio of 1 over the full sample;
+the short-2Y leg is clearly negative. This is a materially weaker result
+than the same pipeline run on the project's synthetic data generator
+(Sharpe up to 1.75), which is expected --- the synthetic generator ties
+tone to returns by construction, real markets do not oblige.
+
+\subsection{Sub-period stability}
+
+Table~\ref{tab:subperiods} breaks the same backtest into five named
+macro-regimes.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{llrrrr}
+\toprule
+Period & Strategy & Ann.\ return & Sharpe & Max DD & Hit rate \\
+\midrule
+GFC (2007--2009)         & Short 2Y  & $-0.92\%$ & $-2.80$ & $-2.7\%$  & 0.25 \\
+                         & Short 10Y & $-0.51\%$ & $-0.65$ & $-1.8\%$  & 0.41 \\
+                         & 50/50     & $-0.71\%$ & $-1.35$ & $-2.2\%$  & 0.39 \\
+ZIRP (2009--2015)        & Short 2Y  & $-0.75\%$ & $-4.16$ & $-5.1\%$  & 0.21 \\
+                         & Short 10Y & $-0.25\%$ & $-0.35$ & $-2.3\%$  & 0.45 \\
+                         & 50/50     & $-0.50\%$ & $-1.18$ & $-3.5\%$  & 0.37 \\
+COVID (2020--2021)       & Short 2Y  & $-0.44\%$ & $-2.90$ & $-1.0\%$  & 0.18 \\
+                         & Short 10Y & $-0.20\%$ & $-0.37$ & $-1.2\%$  & 0.40 \\
+                         & 50/50     & $-0.32\%$ & $-1.01$ & $-1.1\%$  & 0.38 \\
+\textbf{Hiking (2022--2023)} & \textbf{Short 2Y}  & $\mathbf{+0.80\%}$ & $\mathbf{1.55}$ & $-0.4\%$ & 0.49 \\
+                         & \textbf{Short 10Y} & $\mathbf{+2.37\%}$ & $\mathbf{1.79}$ & $-0.9\%$  & 0.54 \\
+                         & \textbf{50/50}     & $\mathbf{+1.58\%}$ & $\mathbf{1.83}$ & $-0.6\%$  & 0.57 \\
+Plateau (2024+)          & Short 2Y  & $-0.85\%$ & $-2.58$ & $-2.5\%$  & 0.27 \\
+                         & Short 10Y & $-0.31\%$ & $-0.42$ & $-1.9\%$  & 0.46 \\
+                         & 50/50     & $-0.58\%$ & $-1.12$ & $-2.1\%$  & 0.39 \\
+\bottomrule
+\end{tabular}
+\caption{Dictionary-tier sub-period stability. The signal's only
+consistently positive period is the 2022--2023 hiking cycle.}
+\label{tab:subperiods}
+\end{table}
+
+This is one of the paper's most interesting findings: the full-sample result
+is negative primarily because of ZIRP, GFC, COVID and the current plateau
+period, while the 2022--2023 hiking cycle --- arguably the regime where
+central bank tone genuinely diverged most sharply from where it had been
+anchored for over a decade --- is the one period where the signal
+performs well across every leg. This is consistent with a hypothesis that
+textual tone carries more information when the policy stance is actually
+\emph{changing} quickly, and less when it is anchored near a bound (ZIRP)
+or dominated by an exogenous shock (COVID). We present this as a
+hypothesis the sub-period table motivates, not as a validated finding ---
+one hiking cycle is one data point.
+
+\subsection{Cross-tier comparison}
+\label{sec:tiers}
+
+Table~\ref{tab:tiers} compares all three sentiment tiers on a common,
+tractable sample: a contiguous 2021--2023 window (688 documents --- a
+random subsample across the full history would break the weekly
+aggregation continuity the signal construction relies on), chosen to
+include the 2022--2023 hiking cycle identified above plus a year of
+run-in for the EMA/z-score to stabilise.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Tier & Short 10Y Sharpe & 50/50 Sharpe & Short 2Y Sharpe \\
+\midrule
+Dictionary  & $\mathbf{1.21}$  & $\mathbf{0.93}$  & $0.02$  \\
+FinBERT     & $0.03$  & $-0.34$ & $-1.16$ \\
+Fine-tuned  & $-0.63$ & $-1.36$ & $-2.89$ \\
+\bottomrule
+\end{tabular}
+\caption{Sentiment-tier comparison, common 2021--2023 window.}
+\label{tab:tiers}
+\end{table}
+
+On this window the purpose-built dictionary lexicon outperforms both
+learned tiers, not the other way around. We read this as plausible rather
+than surprising: FinBERT is trained on general financial-news sentiment,
+not central-bank language specifically, and the fine-tuned tier's training
+set is small, templated and author-curated (Section~3.1) rather than a
+large corpus of naturally-occurring, independently-labelled central-bank
+text. The result is a useful caution against assuming a larger pretrained
+model automatically outperforms a smaller, domain-specific lexicon on a
+narrow task with little in-domain labelled data.
+
+\section{Limitations}
+
+\begin{itemize}
+  \item \textbf{No robust full-sample edge.} The headline result is
+    negative-to-flat. We report it because it is true, not because it is
+    the more publishable finding.
+  \item \textbf{Small fine-tuned set.} The 482-example fine-tuned tier is
+    author-curated and templated, not independently annotated; its train
+    accuracy (95\%) reflects fitting a near-separable templated set, not
+    held-out generalisation to real prose.
+  \item \textbf{One hiking cycle.} The sub-period finding rests on a
+    single historical episode (2022--2023); it is suggestive, not
+    statistically established.
+  \item \textbf{Duration proxy.} Returns use a constant modified-duration
+    approximation rather than actual bond/future contract specifications;
+    real deployment, particularly on the 2-year leg, would likely use
+    short-term interest rate futures (e.g.\ SR3) rather than cash bonds,
+    where round-trip costs are closer to 1bp than the 20bps assumed here.
+  \item \textbf{Single aggregate rates proxy per currency area.} We do not
+    model the full yield curve or cross-currency spillovers between the
+    three central banks' communications.
+\end{itemize}
+
+\section{Conclusion}
+
+A reproducible, real-data pipeline from central bank website to backtest
+tearsheet does not, on its own, produce a profitable signal with a simple
+dictionary-tone baseline. It does surface a specific, falsifiable
+hypothesis --- tone-based signals may work better in regime-change periods
+than in anchored or shock-dominated ones --- worth testing against a
+larger sample of historical hiking/cutting cycles than the single episode
+available in this dataset. Fully reproducing every number in this paper
+takes under two hours end to end:
+\texttt{python -m cb\_signal.ingest \&\& python -m cb\_signal.run\_all
+--skip-synth --subperiods --walk-forward}.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

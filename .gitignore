@@ -9,6 +9,18 @@ venv/
 # Raw HTML scrape cache (hundreds of MB, regenerable via `python -m cb_signal.ingest`)
 data/raw/.cache/
 
+# LaTeX build artifacts (keep .tex, .bib and the compiled .pdf only)
+reports/**/*.aux
+reports/**/*.bbl
+reports/**/*.blg
+reports/**/*.fdb_latexmk
+reports/**/*.fls
+reports/**/*.log
+reports/**/*.nav
+reports/**/*.out
+reports/**/*.snm
+reports/**/*.toc
+
 # OS
 .DS_Store
 Thumbs.db

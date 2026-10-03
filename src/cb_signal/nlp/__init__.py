@@ -1,7 +1,11 @@
 """Public API for the NLP layer.
 
-Right now only the dictionary-based scorer is exposed. FinBERT and the
-fine-tuned sentence-transformer scorers land here as they are built.
+Three sentiment tiers are available (see `python -m cb_signal.nlp --help`):
+dictionary (`cb_signal.nlp.dictionary`), transformer (`cb_signal.nlp.finbert`),
+and a fine-tuned sentence-embedding + linear head tier
+(`cb_signal.nlp.finetuned`). Only the dictionary scorer is re-exported here
+since the other two require optional heavy dependencies (torch,
+sentence-transformers) that shouldn't be imported just by `import cb_signal.nlp`.
 """
 
 from cb_signal.nlp.dictionary import (

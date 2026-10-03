@@ -18,6 +18,7 @@ Construction steps
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import numpy as np
@@ -58,31 +59,109 @@ def add_ema_surprise(idx: pd.DataFrame, halflife: int = 12) -> pd.DataFrame:
     return out
 
 
-def fit_regime_hmm(idx: pd.DataFrame, n_states: int = 3, seed: int = 42) -> pd.Series:
-    """Fit a 3-state Gaussian HMM on (level, weekly change); return state labels
-    remapped to {0: dovish, 1: neutral, 2: hawkish} by mean level."""
+def _fit_hmm_states(X: np.ndarray, n_states: int, seed: int):
+    # Import order matters on this project's Windows dev environment: a
+    # compiled/Cython package like hmmlearn imported before `torch` can
+    # corrupt a later `torch` DLL load elsewhere in the same process (seen
+    # as an unrelated-looking `OSError: ... c10.dll ...` the first time
+    # anything imports torch afterwards). Harmless if torch isn't
+    # installed. See cb_signal.nlp.topics for the same guard.
+    with contextlib.suppress(ImportError):
+        import torch  # noqa: F401
     from hmmlearn.hmm import GaussianHMM  # local import: avoid cost when not used
 
-    level = idx["hawk_index"].values
-    change = np.concatenate([[0.0], np.diff(level)])
-    X = np.column_stack([level, change])
     model = GaussianHMM(n_components=n_states, covariance_type="full",
                         n_iter=200, random_state=seed)
     model.fit(X)
-    raw = model.predict(X)
-    # Remap: order states by inferred mean of the level component
+    return model
+
+
+def _remap_by_level(model, raw: np.ndarray, n_states: int) -> np.ndarray:
+    """Relabel raw HMM states to {0: dovish, ..., n_states-1: hawkish} by mean level."""
     means = np.array([model.means_[k, 0] for k in range(n_states)])
     order = np.argsort(means)  # low -> high
     remap = {int(order[k]): k for k in range(n_states)}
-    labels = np.array([remap[int(s)] for s in raw])
+    return np.array([remap[int(s)] for s in raw])
+
+
+def fit_regime_hmm(idx: pd.DataFrame, n_states: int = 3, seed: int = 42) -> pd.Series:
+    """Fit a 3-state Gaussian HMM on (level, weekly change); return state labels
+    remapped to {0: dovish, 1: neutral, 2: hawkish} by mean level.
+
+    This fits once on the *entire* history, so early-sample labels are
+    informed by the model's fit to later data — fine for a descriptive
+    regime overlay (the tradable signal does not depend on `regime`; see
+    `build_signals`), but not point-in-time. Use
+    `fit_regime_hmm_walkforward` for an out-of-sample version of this.
+    """
+    level = idx["hawk_index"].values
+    change = np.concatenate([[0.0], np.diff(level)])
+    X = np.column_stack([level, change])
+    model = _fit_hmm_states(X, n_states, seed)
+    raw = model.predict(X)
+    labels = _remap_by_level(model, raw, n_states)
     return pd.Series(labels, index=idx.index, name="regime")
 
 
-def build_signals(sentiment: pd.DataFrame, rates: pd.DataFrame) -> pd.DataFrame:
-    """Full signal build: hawkish index -> surprise -> regime -> tradable signal."""
+def fit_regime_hmm_walkforward(
+    idx: pd.DataFrame, n_states: int = 3, seed: int = 42, min_train_years: int = 3
+) -> pd.Series:
+    """Point-in-time version of `fit_regime_hmm`: refit yearly on an expanding
+    window of data up to (not including) each calendar year, then label that
+    year out-of-sample. The first `min_train_years` are labelled by the
+    first available fit (there's no earlier data to train on) and so are
+    in-sample by necessity — this matches standard walk-forward practice of
+    reporting a short warm-up period.
+    """
+    level = idx["hawk_index"].values
+    change = np.concatenate([[0.0], np.diff(level)])
+    X = np.column_stack([level, change])
+    years = pd.DatetimeIndex(idx.index).year
+    first_year, last_year = years.min(), years.max()
+    train_end_year = first_year + min_train_years
+
+    labels = np.full(len(idx), -1, dtype=int)
+
+    # Warm-up: in-sample fit on the first `min_train_years`, used to label
+    # that same window (no earlier data exists to fit on out-of-sample).
+    warm_mask = years < train_end_year
+    if warm_mask.sum() >= n_states:
+        model = _fit_hmm_states(X[warm_mask], n_states, seed)
+        labels[warm_mask] = _remap_by_level(model, model.predict(X[warm_mask]), n_states)
+
+    for year in range(train_end_year, last_year + 1):
+        train_mask = years < year
+        test_mask = years == year
+        if train_mask.sum() < n_states * 5 or test_mask.sum() == 0:
+            continue
+        model = _fit_hmm_states(X[train_mask], n_states, seed)
+        raw = model.predict(X[test_mask])
+        labels[test_mask] = _remap_by_level(model, raw, n_states)
+
+    return pd.Series(labels, index=idx.index, name="regime")
+
+
+def build_signals(
+    sentiment: pd.DataFrame,
+    rates: pd.DataFrame,
+    walk_forward_regime: bool = False,
+    ema_halflife: int = 12,
+    hmm_n_states: int = 3,
+    hmm_seed: int = 42,
+) -> pd.DataFrame:
+    """Full signal build: hawkish index -> surprise -> regime -> tradable signal.
+
+    `signal_2y`/`signal_10y` are built only from `hawk_index`/`hawk_surprise`,
+    both computed with expanding (point-in-time) windows — regime labels are
+    a descriptive overlay and do not feed the tradable signal, so
+    `walk_forward_regime` changes the regime plot/labels but not the backtest.
+    """
     idx = build_hawk_index(sentiment)
-    idx = add_ema_surprise(idx)
-    idx["regime"] = fit_regime_hmm(idx).values
+    idx = add_ema_surprise(idx, halflife=ema_halflife)
+    if walk_forward_regime:
+        idx["regime"] = fit_regime_hmm_walkforward(idx, n_states=hmm_n_states, seed=hmm_seed).values
+    else:
+        idx["regime"] = fit_regime_hmm(idx, n_states=hmm_n_states, seed=hmm_seed).values
 
     rw = _pivot_rates(rates).resample("W-FRI").last().ffill()
     signal_frame = idx[["hawk_index", "hawk_ema", "hawk_surprise", "regime"]].copy()

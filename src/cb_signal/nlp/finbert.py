@@ -7,21 +7,26 @@ scores in ~1-2 hours on a laptop.
 
 Default model
 -------------
-`gtfintechlab/FOMC-RoBERTa` (Shah, Paturi & Chava, 2023, "Trillion Dollar
-Words: A New Financial Dataset, Task & Market Analysis") — a RoBERTa
-fine-tuned on FOMC statements/minutes/speeches with three labels:
-`HAWKISH`, `DOVISH`, `NEUTRAL`. This is the closest off-the-shelf model
-to what CB-Signal targets and is what the LaTeX paper cites as the
-transformer baseline.
-
-Fallback model
---------------
 `ProsusAI/finbert` — general financial sentiment (positive / negative /
-neutral). Used only when the FOMC model cannot be downloaded (no
-internet on the target machine). We remap `positive -> DOVISH` and
-`negative -> HAWKISH` following the convention that "positive" for
-market participants typically means expansionary policy language. This
-mapping is imperfect and is why the FOMC model is the default.
+neutral), publicly downloadable with no authentication. We remap
+`positive -> DOVISH` and `negative -> HAWKISH` following the convention
+that "positive" for market participants typically means expansionary
+policy language. This mapping is imperfect (it was trained on financial
+news, not central bank text specifically) and is the main reason this
+tier is reported as one option among several, not the final word.
+
+Preferred (but gated) alternative
+----------------------------------
+`gtfintechlab/FOMC-RoBERTa` (Shah, Paturi & Chava, 2023, "Trillion Dollar
+Words: A New Financial Dataset, Task & Market Analysis") is a RoBERTa
+fine-tuned directly on FOMC statements/minutes/speeches with three
+labels: `HAWKISH`, `DOVISH`, `NEUTRAL` — the closest off-the-shelf model
+to what CB-Signal targets. It is a **gated HuggingFace repo**: downloading
+it requires a Hugging Face account that has requested and been granted
+access, plus `huggingface-cli login` (or `HF_TOKEN`) before running this
+module. Pass `model_name="gtfintechlab/FOMC-RoBERTa"` once you have
+access; `score_corpus` falls back to `FALLBACK_MODEL` automatically if
+loading fails (e.g. no access yet).
 
 Long-document handling
 ----------------------
@@ -51,8 +56,9 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-DEFAULT_MODEL = "gtfintechlab/FOMC-RoBERTa"
+DEFAULT_MODEL = "ProsusAI/finbert"
 FALLBACK_MODEL = "ProsusAI/finbert"
+GATED_FOMC_MODEL = "gtfintechlab/FOMC-RoBERTa"  # see module docstring: requires HF access grant
 
 # 3-way label indices are model-specific; we resolve them at load time.
 HAWK_ALIASES = {"hawkish", "hawk", "negative"}
@@ -103,15 +109,20 @@ def _load_model(model_name: str):
 
 
 def _chunk_ids(input_ids: list[int], cfg: ChunkingConfig) -> list[list[int]]:
-    """Split a token id list into overlapping windows respecting the stride."""
-    if len(input_ids) <= cfg.max_tokens:
+    """Split a token id list into overlapping windows respecting the stride.
+
+    Each window later gets wrapped as `[CLS, *chunk, SEP]`, so the content
+    length here must leave room for those 2 special tokens, or the model
+    sees `max_tokens + 2` positions and overflows its absolute position
+    embeddings (e.g. BERT-base caps at 512 total, not 512 content tokens).
+    """
+    content_max = cfg.max_tokens - 2
+    if len(input_ids) <= content_max:
         return [input_ids]
     chunks: list[list[int]] = []
     start = 0
-    step = cfg.max_tokens - (cfg.max_tokens - cfg.stride)
-    step = max(step, 1)
     while start < len(input_ids):
-        end = min(start + cfg.max_tokens, len(input_ids))
+        end = min(start + content_max, len(input_ids))
         chunk = input_ids[start:end]
         if len(chunk) >= cfg.min_chunk_tokens:
             chunks.append(chunk)

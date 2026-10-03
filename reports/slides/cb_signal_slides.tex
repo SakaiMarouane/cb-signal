@@ -1,0 +1,140 @@
+\documentclass[11pt]{beamer}
+\usetheme{Madrid}
+\usecolortheme{default}
+\usepackage{booktabs}
+
+\title[CB-Signal]{CB-Signal: A Monetary-Policy Tone Signal\\from Central Bank Communications}
+\author{Marouane Sakai}
+\date{\today}
+
+\begin{document}
+
+\frame{\titlepage}
+
+\begin{frame}{Motivation}
+\begin{itemize}
+  \item Central bank tone --- hawkish vs.\ dovish --- is argued to carry
+    information beyond the policy decision itself.
+  \item Question: does a systematic, text-derived tone signal, built with
+    openly documented methods and tested on \textbf{real market data},
+    produce a backtestable edge once transaction costs are applied?
+  \item We answer this plainly, including when the answer is ``not
+    robustly.''
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Data}
+\begin{itemize}
+  \item \textbf{3,968 real documents}, 1997--2026, scraped directly from
+    issuing institutions:
+  \begin{itemize}
+    \item ECB: 1,871 speeches
+    \item Fed: 1,649 (statements, minutes, speeches)
+    \item BoE: 448 (speeches, MPC minutes)
+  \end{itemize}
+  \item \textbf{Rates}: 2Y/10Y US Treasury, DE/UK long yields, VIX --- FRED,
+    1956--2026 (39,665 obs)
+  \item All three central-bank scrapers required real fixes this cycle:
+    ECB/BoE listing pages moved to JS-rendered search widgets; Fed's
+    meeting-date discovery had a pre-existing bug mislabelling
+    minutes-release dates as meeting dates.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Three independent sentiment tiers}
+\begin{enumerate}
+  \item \textbf{Dictionary}: curated hawkish/dovish lexicon
+    (Apel \& Blix Grimaldi 2012; Hansen \& McMahon 2016; Bennani \&
+    Neuenkirch 2017) + negation handling.
+  \item \textbf{FinBERT} (ProsusAI): pretrained financial-sentiment
+    transformer, chunked \& averaged over long documents.
+  \item \textbf{Fine-tuned tier}: MiniLM sentence embeddings + logistic
+    regression, trained on a small \emph{author-curated} (not
+    human-annotated) 482-example set.
+\end{enumerate}
+\vspace{0.5em}
+Cross-checking three independently-built methods makes the dictionary
+baseline's results harder to dismiss as a lexicon artifact.
+\end{frame}
+
+\begin{frame}{Signal construction and backtest}
+\begin{itemize}
+  \item Weekly hawkish index $\rightarrow$ 12-week EMA baseline
+    $\rightarrow$ expanding-window z-scored surprise (point-in-time by
+    construction).
+  \item Tradable signal: 4-week rolling blend of level \& surprise,
+    applied to 2Y/10Y bond-return proxies.
+  \item 20bps round-trip transaction costs, $T{+}1$ execution.
+  \item \textbf{Found \& fixed}: the original regime-labelling HMM was fit
+    once on the full sample (look-ahead for that label). A walk-forward
+    refit changes 45\% of weekly labels. It doesn't affect the backtest
+    P\&L --- regime is descriptive only --- but it did affect how
+    trustworthy the regime plot was.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Full-sample results: no robust edge}
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Strategy & Ann.\ return & Sharpe & Max DD & Turnover/yr \\
+\midrule
+Short 10Y & $+0.07\%$ & $0.07$  & $-6.1\%$  & 2.2 \\
+50/50     & $-0.24\%$ & $-0.40$ & $-10.0\%$ & 2.9 \\
+Short 2Y  & $-0.55\%$ & $-1.61$ & $-15.2\%$ & 3.6 \\
+\bottomrule
+\end{tabular}
+\vspace{1em}
+
+Weaker than the synthetic-data version of this same pipeline (Sharpe up
+to 1.75) --- expected, since synthetic tone is constructed to drive
+returns.
+\end{frame}
+
+\begin{frame}{But: the signal works in one specific regime}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Period & Strategy & Sharpe \\
+\midrule
+GFC (2007--09)   & 50/50 & $-1.35$ \\
+ZIRP (2009--15)  & 50/50 & $-1.18$ \\
+COVID (2020--21) & 50/50 & $-1.01$ \\
+\textbf{Hiking (2022--23)} & \textbf{50/50} & \textbf{1.83} \\
+Plateau (2024+)  & 50/50 & $-1.12$ \\
+\bottomrule
+\end{tabular}
+\vspace{1em}
+
+Hypothesis: tone carries more information when policy stance is actually
+\emph{changing} quickly, less when anchored (ZIRP) or shock-dominated
+(COVID). One episode --- suggestive, not proven.
+\end{frame}
+
+\begin{frame}{Limitations}
+\begin{itemize}
+  \item Negative-to-flat full-sample result --- reported because it's
+    true.
+  \item Fine-tuned tier's training set is small and author-curated, not
+    independently annotated.
+  \item Sub-period finding rests on a single hiking cycle.
+  \item Constant-duration bond-return proxy, not live futures/contract
+    specs (2Y leg likely uneconomic at 20bps TC on cash bonds; futures
+    round-trips are closer to 1bp).
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Reproduce}
+\begin{itemize}
+  \item Code, data, paper, and this deck:
+    \texttt{github.com/SakaiMarouane/cb-signal}
+  \item Full real-data run (scrape + score + backtest), $<2$ hours:
+\end{itemize}
+\begin{center}
+\texttt{python -m cb\_signal.ingest}\\
+\texttt{python -m cb\_signal.run\_all --skip-synth}\\
+\texttt{\phantom{xx}--subperiods --walk-forward}
+\end{center}
+\end{frame}
+
+\end{document}

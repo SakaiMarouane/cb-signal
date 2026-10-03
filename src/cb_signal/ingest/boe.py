@@ -22,6 +22,7 @@ BoE HTML changes periodically; the parser extracts text conservatively.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import re
@@ -95,10 +96,8 @@ def _parse_page(html: bytes, url: str) -> dict | None:
             "meta", attrs={"property": "article:published_time"}
         )
         if meta_date and meta_date.get("content"):
-            try:
+            with contextlib.suppress(ValueError):
                 date = dt.datetime.fromisoformat(meta_date["content"][:10]).date()
-            except ValueError:
-                pass
     if date is None:
         m = _BOE_DATE_META_RE.search(soup.get_text(" ")[:2000])
         if m:

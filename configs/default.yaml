@@ -1,0 +1,29 @@
+# Default experiment configuration for cb-signal.
+#
+# Loaded by `cb_signal.config.load_config` and used by `python -m
+# cb_signal.run_all` to seed parameter defaults (CLI flags, where they
+# exist, still take precedence over these values). Override on the command
+# line with dotlist syntax, e.g.:
+#
+#   python -m cb_signal.run_all --config-override backtest.tc_bps=10
+#
+# or point at a different file entirely with --config path/to/other.yaml.
+
+sentiment:
+  method: dict                                         # dict | finbert | transformer
+  finbert_model: ProsusAI/finbert
+  transformer_embedding_model: sentence-transformers/all-MiniLM-L6-v2
+
+signals:
+  ema_halflife_weeks: 12
+  hmm_n_states: 3
+  hmm_seed: 42
+
+backtest:
+  tc_bps: 20.0
+  duration_2y: 1.9
+  duration_10y: 8.5
+
+pipeline:
+  subperiods: false
+  walk_forward: false

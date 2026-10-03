@@ -21,12 +21,22 @@ def test_chunk_ids_overlapping_windows():
     cfg = ChunkingConfig(max_tokens=512, stride=384, min_chunk_tokens=32)
     chunks = _chunk_ids(ids, cfg)
     assert len(chunks) >= 2
-    # every chunk within bounds
+    # every chunk leaves room for the [CLS]/[SEP] tokens added later, or the
+    # model's absolute position embeddings overflow (512 total, not content)
     for c in chunks:
-        assert len(c) <= cfg.max_tokens
+        assert len(c) <= cfg.max_tokens - 2
         assert len(c) >= cfg.min_chunk_tokens
     # windows must overlap
     assert chunks[0][-1] > chunks[1][0]
+
+
+def test_chunk_ids_leaves_room_for_special_tokens_on_exact_boundary():
+    # A document exactly at max_tokens must still split, since [CLS]+512+[SEP]
+    # would overflow a 512-position model.
+    ids = list(range(512))
+    chunks = _chunk_ids(ids, ChunkingConfig(max_tokens=512))
+    for c in chunks:
+        assert len(c) + 2 <= 512
 
 
 def test_chunk_ids_drops_tiny_tail():

@@ -42,7 +42,6 @@ import csv
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 HAWKISH: list[str] = [
     # --- Apel & Blix Grimaldi (2012) core ---
     "inflation pressures",
